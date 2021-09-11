@@ -1,13 +1,11 @@
-from mlxtend.frequent_patterns import apriori
-from mlxtend.frequent_patterns import association_rules
-
 import configparser
 
 from elasticsearch import Elasticsearch
+from mlxtend.frequent_patterns import apriori
+from mlxtend.frequent_patterns import association_rules
+from prefect import task
 
-from prefect import Flow, task
 
-import os
 def upload_data(_es, data_record, index_name):
     """
         This method connects with ES and upload to the needed index
@@ -15,6 +13,7 @@ def upload_data(_es, data_record, index_name):
         :param data_record: records to be uploaded: parsed receipt in our case
         :param index_name: the index
     """
+    print(data_record)
 
     if data_record:
 
@@ -22,6 +21,7 @@ def upload_data(_es, data_record, index_name):
             index=index_name,
             body=data_record)
         _es.indices.refresh(index=index_name)
+        print("uploaded successfully")
         return _es
     else:
         print("No data to upload")
@@ -75,7 +75,7 @@ def build_rules(df):
     rules = association_rules(frequent_itemsets, metric="lift", min_threshold=0)
     rules.head()
 
-    print(rules)
+    # print(rules)
     return rules
 
 
@@ -97,7 +97,7 @@ def convert_records_to_df(_results):
                 paid_amount = total
                 items_list = key.Items
                 transaction_id = key.Transaction_id
-                transaction_datetime = key.Transaction_datetime
+                transaction_datetime = key.datetime
                 total_quantity = 0
 
                 df = pd.DataFrame(
@@ -138,7 +138,9 @@ def convert_records_to_df(_results):
     else:
         "No data found"
 
+
 from types import SimpleNamespace
+
 
 def get_and_structure_data(es_client, query_body, index_name):
     import json
@@ -147,6 +149,7 @@ def get_and_structure_data(es_client, query_body, index_name):
         results_list.append(json.loads(json.dumps(_hits, indent=4), object_hook=lambda d: SimpleNamespace(**d)))
     return results_list
 
+
 @task()
 def run_workflow():
     index_name = 'receipts_row_data'
@@ -154,9 +157,36 @@ def run_workflow():
     get_records_query = get_data()
     df = convert_records_to_df(get_and_structure_data(es, get_records_query, index_name))
     build_rules(df)
+    final_df = build_rules(df)
+    import json
+    from datetime import datetime
+    current_datetime = (datetime.now())
 
-flow = Flow("promotions-workflow", tasks=[run_workflow])
+    current_datetime = current_datetime.strftime('%Y-%m-%d %H:%M:%S')
+    current_datetime = datetime.strptime(current_datetime, '%Y-%m-%d %H:%M:%S')
 
+    for index, row in final_df.iterrows():
+        antecedents = (list(frozenset(row['antecedents'])))
+        consequents = (list(frozenset(row['consequents'])))
+
+        print(consequents, antecedents)
+
+        json_dataframes = {
+            "antecedents": antecedents,
+            'consequents': consequents,
+            'support': row['support'],
+            'confidence': row['confidence'],
+            'lift': row['lift'],
+            'datetime': current_datetime.isoformat()}
+        upload_data(es, json.dumps(json_dataframes), "promotions_and_bundles")
+    return final_df
+
+
+from prefect import Flow
+
+flow = Flow("dashboard_promotions", tasks=[run_workflow])
+
+import os
 
 os.system("prefect auth login -k jCnFYiIZoczd9Lx2Ql49cw")
 flow.register(project_name="'Calculations_workflow'")
